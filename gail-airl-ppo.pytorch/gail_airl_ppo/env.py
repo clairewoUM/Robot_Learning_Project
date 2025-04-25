@@ -31,16 +31,38 @@ class NormalizedEnv(gym.Wrapper):
 
     def __init__(self, env):
         super().__init__(env)
-        # Extract max_episode_steps from env.spec.max_episode_steps
-        self._max_episode_steps = env.spec.max_episode_steps
+        # Extract max_episode_steps if available
+        try:
+            self._max_episode_steps = env.spec.max_episode_steps
+        except AttributeError:
+            # Try underlying env if it's a wrapper
+            spec = getattr(getattr(env, 'env', None), 'spec', None)
+            self._max_episode_steps = spec.max_episode_steps if spec is not None else None
 
         self.scale = env.action_space.high
         self.action_space.high /= self.scale
         self.action_space.low /= self.scale
 
     def step(self, action):
-        obs, reward, done, info = self.env.step(action * self.scale)
-        return obs, reward, done, info
+        # Handle both old and new gym API formats
+        step_result = self.env.step(action * self.scale)
+        
+        # New Gym API returns (obs, reward, terminated, truncated, info)
+        if isinstance(step_result, tuple) and len(step_result) == 5:
+            obs, reward, terminated, truncated, info = step_result
+            return obs, reward, terminated, truncated, info
+        # Old Gym API returns (obs, reward, done, info)
+        else:
+            obs, reward, done, info = step_result
+            return obs, reward, done, info
         
     def reset(self):
-        return self.env.reset()
+        # Handle both old and new gym API formats
+        reset_result = self.env.reset()
+        
+        # New API returns (obs, info)
+        if isinstance(reset_result, tuple) and len(reset_result) >= 1:
+            return reset_result
+        # Old API returns just obs
+        else:
+            return reset_result
