@@ -17,13 +17,21 @@ class G1Env(gym.Env):
         # Env parameters
         self.frame_skip = 5
         self.goal_pos = np.array([0.0, 0.28, 0.0])  # Set Y to 0.28m ahead
-        self.goal_success_threshold = 0.27  # 27cm threshold for success
+        self.goal_success_threshold = 0.2  # 20cm threshold for success
         self.goal_reward_weight = 10.0  # Keep the increased reward weight
         self.stability_reward_weight = 0.8
         self.stability_height_threshold = 0.5
         self.fall_threshold = 0.4
         self.action_scale = 0.03
         self.episode_length = 1000
+    
+        # --- Added: new reward‐term hyperparameters
+        self.desired_step_size = 0.2            # ideal forward movement per frame
+        self.step_penalty_weight = 5.0          # penalty weight for deviation in step size
+        self.tilt_penalty_weight = 2.0          # penalty weight per radian of torso tilt
+        self.lateral_reward_weight = 3.0        # bonus weight per meter of foot lateral separation
+        self.prev_action = np.zeros(23, dtype=np.float32)         # buffer last action for smoothing
+        # --- End added
         
         # Tracking variables
         self.steps = 0
@@ -155,7 +163,8 @@ class G1Env(gym.Env):
         
         # Set goal position (slightly away from initial position)
         self.torso_pos = self.data.xpos[mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "torso")].copy()
-        self.goal_pos = np.array([0.0, 0.4, 0.0])  # Set Y to 0.4m ahead (changed from 0.5)
+        # self.goal_pos = np.array([0.0, 0.4, 0.0])  # Set Y to 0.4m ahead (changed from 0.5)
+        self.goal_pos = np.array([0.25, 0.0, 0.0]) # Set X to 0.25m ahead (side stepping is in x-axis)
         print(f"Setting goal at y={self.goal_pos[1]:.2f} (initial y={self.torso_pos[1]:.2f})")
         
         # Reset tracking variables
@@ -178,7 +187,13 @@ class G1Env(gym.Env):
         
         # Scale and clip action for stability
         action = np.clip(action, -1.0, 1.0) * self.action_scale
-        
+
+        # —— ADDED SMOOTHING BLOCK ——
+        alpha = 0.6
+        action = alpha * self.prev_action + (1 - alpha) * action
+        self.prev_action = action.copy()
+        # ————————————————————————
+
         # We can only control the actual joint DOFs, not the root position/orientation
         # Skip the first 7 qpos values (3 for position, 4 for quaternion orientation)
         # and apply action to the last 23 joint values (if model has more)
@@ -202,6 +217,8 @@ class G1Env(gym.Env):
             -joint_limits, joint_limits
         )
 
+        jerk_penalty = 0.1 * np.sum((action - self.prev_action)**2)
+        
         # Run the simulation with smaller steps for better stability
         try:
             for _ in range(self.frame_skip):  # Take more smaller steps 
@@ -240,6 +257,7 @@ class G1Env(gym.Env):
             # Fallback to root position if torso not found
             torso_pos = root_pos
         
+        # --- Existing reward components ---
         # Compute reward based on multiple components
         # 1. Base survival reward
         reward = 0.3
@@ -258,12 +276,46 @@ class G1Env(gym.Env):
         else:
             goal_reward = self.goal_reward_weight * (1 - min(goal_distance, 1.0))
         reward += goal_reward
+        # --- End existing components ---
+        
+        ## Penalty for Jerking
+        reward -= jerk_penalty
+        
+        ## Explicit reward for y-direction progress, small and dense feedback
+        # 4. Forward progress
+        y_progress = root_pos[1] - prev_root_pos[1]
+        if y_progress > 0:
+            reward += y_progress * 15.0
 
-        # Check for goal success (robot is close enough to goal)
-        goal_success = goal_distance < 0.3  # Increased threshold for 3m goal (was 0.27)
+        # # Check for goal success (robot is close enough to goal)
+        # goal_success = goal_distance < 0.3  # Increased threshold for 3m goal (was 0.27)
 
+        # --- Added: Step‐size consistency bonus/penalty ---
+        step_dev = y_progress - self.desired_step_size
+        reward -= self.step_penalty_weight * abs(step_dev)
+        # --- End added ---
+
+        # --- Added: Torso‐tilt penalty ---
+        # Use root quaternion (qpos[3:7]) to compute tilt angle
+        w, x, y, z = self.data.qpos[3:7]
+        # Rotation matrix element Rzz = 1 - 2*(x^2 + y^2)
+        Rzz = 1 - 2*(x*x + y*y)
+        tilt_angle = np.arccos(np.clip(Rzz, -1.0, 1.0))
+        reward -= self.tilt_penalty_weight * tilt_angle
+        # --- End added ---
+
+        # --- Added: Lateral‐stepping bonus ---
+        left_sid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "left_foot")
+        right_sid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "right_foot")
+        left_xy  = self.data.site_xpos[left_sid]
+        right_xy = self.data.site_xpos[right_sid]
+        lateral_disp = abs(left_xy[0] - right_xy[0])
+        reward += self.lateral_reward_weight * lateral_disp
+        # --- End added ---
+        
         # Check for termination (robot fell or reached goal)
         fall = root_height < self.fall_threshold
+        goal_success = goal_distance < self.goal_success_threshold
         terminated = fall or goal_success
         
         # Maximum episode length exceeded
@@ -318,8 +370,9 @@ class GymCompatibilityWrapper:
     def __init__(self, env):
         self.env = env
         self.observation_space = env.observation_space
+        self.reward_range = (-float("inf"), float("inf"))
         self.action_space = env.action_space
-        
+    
     def reset(self, **kwargs):
         """Handle both old and new gym APIs"""
         result = self.env.reset(**kwargs)
