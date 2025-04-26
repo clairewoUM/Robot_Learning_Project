@@ -16,50 +16,6 @@ def make_buffer(csv_path, output_path, time_col='Timestamp', exclude_cols=None):
         time_col (str): Name of the timestamp column in the CSV (to exclude from state data)
         exclude_cols (list): Additional column names to exclude from the state
     """
-    joint_angle_scale = {
-        # --- Hip ---
-        'LeftHip_pitch': 0.2,
-        'RightHip_pitch': 0.2,
-
-        'LeftHip_roll': 1.0,
-        'RightHip_roll': 1.0,
-
-        'LeftHip_yaw': 1.0,
-        'RightHip_yaw': 1.0,
-
-        # --- Knee ---
-        'LeftKnee_flexion': 0.2,
-        'RightKnee_flexion': 0.2,
-
-        # --- Ankle ---
-        'LeftAnkle_pitch': 0.2,
-        'RightAnkle_pitch': 0.2,
-
-        'LeftAnkle_roll': 0.2,
-        'RightAnkle_roll': 0.2,
-
-        # --- Shoulder ---
-        'LeftShoulder_pitch': 1.0,
-        'RightShoulder_pitch': 1.0,
-
-        'LeftShoulder_roll': 1.0,
-        'RightShoulder_roll': 1.0,
-
-        'LeftShoulder_yaw': 1.0,
-        'RightShoulder_yaw': 1.0,
-
-        # --- Elbow ---
-        'LeftElbow_flexion': 1.0,
-        'RightElbow_flexion': 1.0,
-
-        # --- Wrist ---
-        'LeftWrist_pronation': 0.0,
-        'RightWrist_pronation': 0.0,
-
-        # --- Waist ---
-        'Waist_yaw': 1.0
-    }
-
     # print(f"Reading data from {csv_path}...")
     try:
         df = pd.read_csv(csv_path)
@@ -91,20 +47,6 @@ def make_buffer(csv_path, output_path, time_col='Timestamp', exclude_cols=None):
     except KeyError:
         print(f"Error: Timestamp column '{time_col}' not found in CSV.")
         return
-    
-    # Apply scaling to each joint angle column, with missing joint check
-    for idx, col in enumerate(joint_cols):
-        if col not in joint_angle_scale:
-            print(f"Warning: No scaling factor defined for joint column '{col}'. Using default scale = 1.0.")
-            scale = 1.0
-        else:
-            scale = joint_angle_scale[col]
-
-        qpos[:, idx] *= scale
-        print(f"Applied scale {scale} to joint column: {col}")
-        print(f"First 5 values for '{col}' after scaling: {qpos[:5, idx]}")
-
-
 
     num_joints = qpos.shape[1]
     print(f"Number of joints detected: {num_joints}")
@@ -245,4 +187,3 @@ if __name__ == '__main__':
     # print("\nTo verify, run:")
     # # Use single quotes for the inner command string
     # print(f"python -c \"import torch; expert = torch.load('{args.out}'); print(expert['state'].shape, expert['action'].shape)\"") 
-
